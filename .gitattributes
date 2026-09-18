@@ -1,0 +1,4 @@
+# Keep every text file LF in the working tree on every platform: the self-check harnesses read
+# this package's own sources and patch file as text, so CRLF checkouts would drift from the
+# repository (the same reason dsh-plugin-ptc-bash pins it).
+* text=auto eol=lf

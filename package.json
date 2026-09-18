@@ -1,0 +1,57 @@
+{
+  "name": "dsh-plugin-web-search",
+  "version": "0.1.0",
+  "description": "SearxNG-backed web search provider for DeepSeek Harness, with a Plugin configuration card that takes over the default search provider.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "tools",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "deepseek-harness",
+    "web-search",
+    "searxng"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CJ-SH/dsh-plugin-web-search.git"
+  },
+  "scripts": {
+    "link-imports": "node tools/link-imports.mjs",
+    "test": "node test/host.test.mjs && node test/client.test.mjs && node test/card.test.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-settings-plugins"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-web": "*",
+    "@deepseek-ai/schemastery": "*"
+  }
+}

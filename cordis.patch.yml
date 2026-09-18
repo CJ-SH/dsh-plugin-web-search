@@ -1,0 +1,13 @@
+# dsh-plugin-web-search bundle patch: one new loader row.
+#
+# The plugin owns its configuration through the `web-search` settings namespace and takes over
+# the `web` row's provider selection at save time by writing a managed block into the HOME patch
+# layer (`$DSH_HOME/cordis.patch.yml`), which dsh applies above every profile. It therefore
+# touches no shipped row here — in particular it does NOT widen `connection`'s `inject`, because
+# the host half registers its own route on `webServer` instead of using a `connection.rpc`
+# channel (`.trellis/spec/.../halves-contract.md`, "Channel or own route").
+#
+# No config: everything user-editable lives in the settings card.
+- insert:
+    - id: web-search
+      name: 'dsh-plugin-web-search'
