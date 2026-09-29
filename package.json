@@ -1,21 +1,25 @@
 {
   "name": "dsh-plugin-web-search",
   "version": "0.1.0",
-  "description": "SearxNG-backed web search provider for DeepSeek Harness, with a Plugin configuration card that takes over the default search provider.",
+  "description": "SearxNG / Jina / Firecrawl format providers for DeepSeek Harness, with a Settings page that takes over the default search provider.",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "lib",
+    "locale",
+    "icon.svg",
     "cordis.patch.yml",
     "tools",
     "README.md",
     "LICENSE"
   ],
+  "icon": "./icon.svg",
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
   },
@@ -46,12 +50,13 @@
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-ui-renderer",
-        "@deepseek-ai/dsh-client-ui-settings-plugins"
+        "@deepseek-ai/dsh-client-ui-settings"
       ]
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-web": "*",
+    "@deepseek-ai/dsh": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-web": "^0.2.0-rc.1",
     "@deepseek-ai/schemastery": "*"
   }
 }

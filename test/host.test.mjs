@@ -301,12 +301,63 @@ check('merge: a section without providers starts empty', m.mergeAdapterConfigs({
 
 // ── settings schema ─────────────────────────────────────────────────────────────────────
 
+// A `.volatile()` field resolves to a stable reference read with `get()` — that indirection is
+// what lets a live edit reach a running plugin. `settings.describe()` hands back plain JSON for
+// the same field, which is why the module unwraps at every read instead of assuming either shape.
+// The accessor below tolerates both, so a missing marker surfaces as the guard block failing
+// below rather than as a crash here.
+const resolvedField = (config, key) => {
+  const value = config[key]
+  return value !== null && typeof value === 'object' && typeof value.get === 'function' ? value.get() : value
+}
 check('schema: defaults resolve for an empty section',
-  m.Config({}), { provider: 'searxng', fetchProvider: 'http', providers: {} })
+  resolvedField(m.Config({}), 'provider'), 'searxng')
 check('schema: an adapter config round-trips across both capabilities',
-  m.Config({ providers: { searxng: { endpoint: 'https://s/' }, jina: { endpoint: 'https://j/' } } }).providers.jina.endpoint,
+  resolvedField(resolvedField(m.Config({ providers: { searxng: { endpoint: 'https://s/' }, jina: { endpoint: 'https://j/' } } }), 'providers'), 'jina').endpoint,
   'https://j/')
 check('schema: serializes for the configuration surface', typeof m.Config.toJSON(), 'object')
+
+// ── the contract dsh 0.2 enforces on a plugin Config ────────────────────────────────────
+//
+// This block is the regression guard for the failure this plugin actually shipped with on
+// 0.2.0-rc.1: `volatileForm()` skips any entry whose schema exposes no volatile field, and every
+// write is then refused with `has no volatile fields`. Both rules are replicated here over the
+// real serialized schema, so removing a `.volatile()` marker turns this suite red instead of
+// silently disabling the whole configuration surface.
+const configSchema = m.Config.toJSON()
+const schemaNode = (uid) => configSchema.refs[String(uid)]
+const rootNode = schemaNode(configSchema.uid)
+const isVolatileNode = (node) => node?.meta?.volatile === true
+/** `volatileForm`: the root itself, or at least one volatile field directly under an object root. */
+const hasVolatileForm = (node) => {
+  if (isVolatileNode(node)) return true
+  if (node?.type !== 'object') return false
+  return Object.values(node.dict ?? {}).some((uid) => isVolatileNode(schemaNode(uid)))
+}
+/** `isVolatilePath`: a path is editable once its first volatile ancestor covers it. */
+const isVolatilePath = (node, path) => {
+  if (isVolatileNode(node)) return true
+  const [key, ...rest] = path
+  const child = key === undefined ? undefined : node?.dict?.[key]
+  return child !== undefined && isVolatilePath(schemaNode(child), rest)
+}
+
+check('config: the settings service can build a form from this schema', hasVolatileForm(rootNode), true)
+check('config: both selection fields are writable', [
+  isVolatilePath(rootNode, ['provider']),
+  isVolatilePath(rootNode, ['fetchProvider']),
+], [true, true])
+// The dict node carries the marker, because `isVolatilePath` stops at the first volatile ancestor
+// — that is what makes the whole `providers.<adapter>.<field>` subtree writable as one field.
+check('config: the providers dict is writable as a whole', isVolatilePath(rootNode, ['providers']), true)
+// ...and precisely because it stops there, a volatile leaf *inside* the volatile dict would trip
+// `validateVolatileSchema` ("volatile fields require a fixed object path without an enclosing
+// volatile field"). The adapter leaves must therefore stay plain.
+check('config: adapter leaves stay plain inside the volatile dict', (() => {
+  const providersNode = schemaNode(rootNode.dict.providers)
+  const adapterNode = schemaNode(providersNode.inner)
+  return [isVolatileNode(providersNode), Object.values(adapterNode.dict ?? {}).some((uid) => isVolatileNode(schemaNode(uid)))]
+})(), [true, false])
 
 // ── listing what the seam actually registered ───────────────────────────────────────────
 
@@ -326,7 +377,18 @@ check('manifest: the loader patch is declared', manifest.dsh.bundle.patch, './co
 check('manifest: the browser half is exported', manifest.exports['./client'], './lib/client.js')
 check('manifest: both halves ship', manifest.files.includes('lib'), true)
 check('manifest: the peer imports are declared', Object.keys(manifest.peerDependencies).sort(),
-  ['@deepseek-ai/dsh-web', '@deepseek-ai/schemastery'])
+  ['@deepseek-ai/dsh', '@deepseek-ai/dsh-web', '@deepseek-ai/schemastery'])
+// dsh 0.2 gates `@deepseek-ai/dsh` and every `@deepseek-ai/dsh-*` peer, and an unsatisfiable range
+// gets this row DENIED at startup. A wildcard on a gated name is therefore not "permissive" — it
+// is the silent pass that let this plugin load on a runtime whose settings API it could not use.
+check('manifest: every gated peer is pinned to the 0.2 line',
+  Object.entries(manifest.peerDependencies)
+    .filter(([name]) => name === '@deepseek-ai/dsh' || name.startsWith('@deepseek-ai/dsh-'))
+    .map(([, range]) => range),
+  ['^0.2.0-rc.1', '^0.2.0-rc.1'])
+check('manifest: display metadata ships with the plugin',
+  [manifest.icon, manifest.exports['./locale/*.json'], manifest.files.includes('locale')],
+  ['./icon.svg', './locale/*.json', true])
 
 const patchText = readFileSync(join(packageDir, 'cordis.patch.yml'), 'utf8')
 check('patch: inserts exactly the plugin row',
@@ -342,8 +404,22 @@ check('host half: declares web first', m.inject[0], 'web')
 // ── apply must not throw ────────────────────────────────────────────────────────────────
 
 function fakeContext() {
-  const registered = { search: [], fetch: [], routes: [], sections: [] }
-  const registry = { searchProviders: new Map(), fetchProviders: new Map() }
+  const registered = { search: [], fetch: [], routes: [] }
+  // The service surface this plugin actually depends on now: `ns` is the loader row id (not a
+  // namespace it registers) and `describe()` is the live read. The previous fake hand-wrote
+  // `installSection` — a method dsh 0.2 deleted — which is precisely how a 194-assertion suite
+  // stayed green over a plugin whose entire capability was dead.
+  const settings = {
+    describe: () => [{
+      ns: 'web-search',
+      value: {
+        provider: 'searxng',
+        fetchProvider: 'http',
+        providers: { searxng: { endpoint: 'https://searxng.example.org/search', headers: '' } },
+      },
+    }],
+    update: async () => {},
+  }
   const ctx = {
     effect: (fn) => {
       const disposer = fn()
@@ -352,32 +428,16 @@ function fakeContext() {
     inject: (deps, callback) => {
       callback({
         effect: ctx.effect,
-        get: () => undefined,
-        settings: {
-          installSection: (owner, ns, schema, entry, hooks) => {
-            registered.sections.push(ns)
-            hooks.setSource(() => entry)
-          },
-        },
         webServer: {
           register: (route) => {
             registered.routes.push(route)
             return () => {}
           },
         },
-        web: {
-          registerSearchProvider: (provider) => {
-            registered.search.push(provider)
-            return () => {}
-          },
-          registerFetchProvider: (provider) => {
-            registered.fetch.push(provider)
-            return () => {}
-          },
-        },
       })
     },
     get: () => undefined,
+    settings,
     web: {
       registerSearchProvider: (provider) => {
         registered.search.push(provider)
@@ -389,8 +449,7 @@ function fakeContext() {
       },
     },
   }
-  void registry
-  return { ctx, registered }
+  return { ctx, registered, settings }
 }
 
 const applied = fakeContext()
@@ -403,7 +462,14 @@ try {
 check('apply: does not throw on a well-formed context', applyError, null)
 check('apply: registers the search adapter', applied.registered.search.map((p) => p.id), ['searxng'])
 check('apply: registers both fetch adapters', applied.registered.fetch.map((p) => p.id), ['jina', 'firecrawl'])
-check('apply: registers the settings section', applied.registered.sections, ['web-search'])
+// `settings.installSection` is what broke this plugin on 0.2.0-rc.1, and its failure mode is a
+// TypeError swallowed by a try/catch — invisible at runtime. Guard the source, not the behaviour.
+check('apply: never calls the removed settings.installSection',
+  /installSection/.test(readFileSync(join(packageDir, 'lib', 'index.js'), 'utf8')), false)
+// The read path must accept the live service's answer: `describe()` carries plain JSON, so the
+// endpoint reaches `available()` even though `apply`'s own `config` argument would be wrapped.
+check('apply: the configured endpoint reaches the adapter through the live config',
+  applied.registered.search[0].available(), true)
 check('apply: owns a prefix route, not a channel',
   applied.registered.routes.map((route) => route.kind + ' ' + route.path), ['prefix /web-search'])
 check('apply: the route handler is callable', typeof applied.registered.routes[0].handler, 'function')
@@ -411,21 +477,26 @@ check('apply: the route handler is callable', typeof applied.registered.routes[0
 const realConsoleError = console.error
 console.error = () => {}
 const broken = fakeContext()
+const brokenFetch = []
 broken.ctx.web = {
   registerSearchProvider: () => { throw new Error('duplicate id') },
-  registerFetchProvider: () => { throw new Error('duplicate id') },
+  registerFetchProvider: (provider) => { brokenFetch.push(provider); return () => {} },
 }
-broken.ctx.inject = (deps, callback) => {
-  if (deps.includes('settings')) throw new Error('no settings provider')
-  callback(broken.ctx)
-}
+// Three independent degradations at once: a provider that cannot register, a route that cannot
+// register, and a live read that throws.
+broken.ctx.inject = () => { throw new Error('no webServer on this composition') }
+broken.settings.describe = () => { throw new Error('settings document unavailable') }
 let brokenError = null
 try {
-  m.apply(broken.ctx, {})
+  m.apply(broken.ctx, { providers: { jina: { endpoint: 'https://fetch.example.org/' } } })
 } catch (error) {
   brokenError = error
 }
 check('apply: degrades instead of throwing when a surface is unavailable', brokenError, null)
+// `describe()` threw, so the endpoint can only have come from the row config `apply` was handed —
+// which is what proves the fallback path, rather than asserting that a stub equals itself.
+check('apply: a failed live read falls back to the row config',
+  brokenFetch.filter((provider) => provider.id === 'jina').map((provider) => provider.available()), [true])
 console.error = realConsoleError
 
 rmSync(sandbox, { recursive: true, force: true })

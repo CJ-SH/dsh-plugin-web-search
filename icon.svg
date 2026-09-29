@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none"
+     stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
+     role="img" aria-label="Web Search">
+  <!-- A globe with a magnifier: the two capabilities this bundle contributes, search and fetch. -->
+  <circle cx="10.5" cy="10.5" r="6.5"/>
+  <path d="M4.6 8.2h11.8M4.6 12.8h11.8"/>
+  <path d="M10.5 4a11 11 0 0 0 0 13a11 11 0 0 0 0-13z"/>
+  <path d="M15.4 15.4 21 21"/>
+</svg>

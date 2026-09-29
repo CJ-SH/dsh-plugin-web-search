@@ -54,39 +54,105 @@ check('bundle: declares the locale service it reads', exported.inject.includes('
 check('bundle: does not depend on the connection client', exported.inject.includes('connection'), false)
 
 // ── seat registration ───────────────────────────────────────────────────────────────────
+//
+// The fake models the REAL `slots.inject` contract: the callback runs only while the slot
+// declaration is live (synchronously when it already exists), and its disposer runs when the
+// declaration collapses. The previous fake invoked the callback unconditionally — that stub shape
+// is exactly why a seat dsh 0.2 had renamed kept this suite green.
 
-const seats = []
 const locales = []
-const ctx = {
-  slots: {
-    inject: (key, callback) => {
-      callback()
+
+function makeHarness({ declared = [], localeLog = locales } = {}) {
+  const seats = []
+  const injectors = []
+  const live = new Set(declared)
+  const api = {
+    declare(name) {
+      if (live.has(name)) return
+      live.add(name)
+      for (const entry of injectors) {
+        if (entry.key === name && entry.disposer === undefined) entry.disposer = entry.callback() ?? (() => {})
+      }
     },
-    register: (options, component) => {
-      seats.push({ options, component })
-      return () => {}
+    collapse(name) {
+      if (!live.has(name)) return
+      live.delete(name)
+      for (const entry of injectors) {
+        if (entry.key !== name || entry.disposer === undefined) continue
+        entry.disposer()
+        entry.disposer = undefined
+      }
     },
-  },
-  locale: {
-    register: (ns, dictionaries) => {
-      locales.push({ ns, dictionaries })
-      return () => {}
+    cellsIn: (name) => seats.filter((seat) => seat.options.name === name),
+  }
+  const ctx = {
+    slots: {
+      inject: (key, callback) => {
+        const entry = { key, callback, disposer: undefined }
+        injectors.push(entry)
+        if (live.has(key)) entry.disposer = callback() ?? (() => {})
+        return () => {
+          if (entry.disposer !== undefined) entry.disposer()
+          entry.disposer = undefined
+        }
+      },
+      register: (options, component) => {
+        seats.push({ options, component })
+        return () => {
+          const index = seats.findIndex((seat) => seat.options === options)
+          if (index >= 0) seats.splice(index, 1)
+        }
+      },
     },
-  },
+    locale: {
+      register: (ns, dictionaries) => {
+        localeLog.push({ ns, dictionaries })
+        return () => {}
+      },
+      getLocale: () => ({ active: 'zh' }),
+    },
+  }
+  return { ctx, api, seats }
 }
 
+// `settings.section` must be declared for this plugin to have a seat to register into: it may not
+// register into an undeclared slot (the shell throws, which fails the whole browser half).
+const harness = makeHarness({ declared: ['settings.section'] })
 let applyError = null
 try {
-  exported.apply(ctx)
+  exported.apply(harness.ctx)
 } catch (error) {
   applyError = error
 }
 check('apply: does not throw', applyError, null)
-check('seat: exactly one cell is registered', seats.length, 1)
-check('seat: joins the plugin configuration seat', seats[0].options.name, 'settings.plugin.item')
-check('seat: keyed by the settings namespace', seats[0].options.key, 'web-search')
-check('seat: carries a locale for its copy', seats[0].options.locale, 'web-search')
-check('seat: registers a component', typeof seats[0].component, 'function')
+check('seat: without a hub, exactly one page is registered', harness.seats.length, 1)
+check('seat: it is this plugin\'s own Settings page', harness.seats[0].options.name, 'settings.section')
+check('seat: identified by the plugin id, not a namespace key', harness.seats[0].options.id, 'web-search')
+check('seat: it carries no keyed `key` option', harness.seats[0].options.key, undefined)
+check('seat: carries a locale for its copy', harness.seats[0].options.locale, 'web-search')
+check('seat: its nav label resolves to a title', typeof harness.seats[0].options.label === 'function' ? harness.seats[0].options.label() : null, 'Web Search')
+check('seat: registers a component', typeof harness.seats[0].component, 'function')
+
+// ── one panel, two mount points (the hub swap) ──────────────────────────────────────────
+
+const cardComponent = harness.seats[0].component
+
+harness.api.declare('plugin-suite.panel')
+check('hub: the own page stands down', harness.api.cellsIn('settings.section').length, 0)
+check('hub: exactly one cell lands in the hub', harness.api.cellsIn('plugin-suite.panel').length, 1)
+check('hub: the hub renders the very same component', harness.api.cellsIn('plugin-suite.panel')[0].component, cardComponent)
+
+harness.api.collapse('plugin-suite.panel')
+check('hub: collapsing the hub restores the own page', harness.api.cellsIn('settings.section').length, 1)
+check('hub: and takes the hub cell away', harness.api.cellsIn('plugin-suite.panel').length, 0)
+
+// A hub that was already composed when this plugin loaded must not leave two live entries: the
+// `inject` callback runs synchronously in that case, which is why the standing page is registered
+// BEFORE the injection is installed.
+const hubFirst = makeHarness({ declared: ['settings.section', 'plugin-suite.panel'], localeLog: [] })
+exported.apply(hubFirst.ctx)
+check('hub: a hub loaded first still leaves exactly one cell',
+  [hubFirst.api.cellsIn('settings.section').length, hubFirst.api.cellsIn('plugin-suite.panel').length], [0, 1])
 check('locale: one namespace is registered', locales.map((entry) => entry.ns), ['web-search'])
 check('locale: both dictionaries are supplied',
   Object.keys(locales[0].dictionaries).sort(), ['en', 'zh'])
@@ -96,6 +162,22 @@ const enKeys = Object.keys(locales[0].dictionaries.en).sort()
 check('locale: the dictionaries have identical key sets', zhKeys, enKeys)
 check('locale: no dictionary entry is blank',
   Object.values(locales[0].dictionaries.zh).every((value) => typeof value === 'string' && value.length > 0), true)
+
+// ── the seat this plugin cannot live without ────────────────────────────────────────────
+//
+// `settings.section` is declared by the settings shell, and registering into an UNDECLARED slot
+// throws — which fails the entire browser half and surfaces as "did not activate" on a healthy
+// workspace. That is exactly the bug this suite missed, because every harness above declares the
+// seat. With none declared, `apply` must contribute nothing and must not throw.
+const seatless = makeHarness({ localeLog: [] })
+let seatlessError = null
+try {
+  exported.apply(seatless.ctx)
+} catch (error) {
+  seatlessError = error
+}
+check('seat: with no Settings seat declared, apply does not throw', seatlessError, null)
+check('seat: and contributes nothing to an undeclared slot', seatless.seats.length, 0)
 
 // ── a loader-less composition still renders ─────────────────────────────────────────────
 
