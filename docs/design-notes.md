@@ -166,7 +166,7 @@ README 只收录 GitHub 与本地目录两条路径。本包目前**未发布到
 
 ```bash
 # 方式 A（推荐，无需额外步骤）：实体安装，插件的裸导入由常规父级查找命中 dsh 安装闭包
-npm pack && dsh plugin --profile web add ./dsh-plugin-web-search-0.1.0.tgz
+npm pack && dsh plugin --profile web add ./dsh-plugin-web-search-0.2.0.tgz
 ```
 
 加载插件需重启 dsh；重启会结束当前 agent 自己的进程，这一步交给用户。

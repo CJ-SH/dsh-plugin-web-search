@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-web-search",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "SearxNG / Jina / Firecrawl format providers for DeepSeek Harness, with a Settings page that takes over the default search provider.",
   "type": "module",
   "main": "lib/index.js",
